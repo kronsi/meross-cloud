@@ -63,3 +63,6 @@ typings/
 
 
 .idea
+
+example/example-internal.js
+package-lock.json

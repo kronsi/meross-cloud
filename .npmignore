@@ -13,3 +13,4 @@ coverage
 .eslintignore
 package-lock.json
 .github
+example/example-internal.js

@@ -82,3 +82,10 @@ meross.on('data', (deviceId, payload) => {
 meross.connect((error) => {
     console.log('connect error: ' + error);
 });
+
+/*
+* alternative, passing an uuid deviceId to connect method 
+meross.connect('device uuid',(error) => {
+    console.log('connect error: ' + error);
+});
+*/

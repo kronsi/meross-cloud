@@ -1,8 +1,9 @@
 {
-  "name": "meross-cloud",
-  "version": "2.4.0",
+  "name": "@kronsi/meross-cloud",
+  "version": "2.4.1",
   "description": "Control Meross cloud devices using nodejs",
   "author": "Ingo Fischer <iobroker@fischer-ka.de>",
+  "co-author": "Sven Kronshage <sven@kronsi.com>",
   "contributors": [],
   "homepage": "",
   "license": "MIT",
@@ -12,7 +13,7 @@
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/Apollon77/meross-cloud"
+    "url": "https://github.com/kronsi/meross-cloud"
   },
   "dependencies": {
     "mqtt": "^4.3.7",
@@ -29,7 +30,7 @@
     "nock": "^13.2.9"
   },
   "bugs": {
-    "url": "https://github.com/Apollon77/meross-cloud/issues"
+    "url": "https://github.com/kronsi/meross-cloud/issues"
   },
   "main": "index.js",
   "types": "index.d.ts",

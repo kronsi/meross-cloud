@@ -143,7 +143,20 @@ class MerossCloud extends EventEmitter {
         this.devices[deviceId].connect();
     }
 
-    connect(callback) {
+    connect(...args) {
+        let deviceId = null;
+        let callback = null;
+        for(let i =0; i < args.length; i++){
+            switch(typeof args[i]){
+                case "string":
+                    deviceId = args[i];
+                    break;
+                case "function":
+                    callback = args[i]
+                    break;
+            }
+        }
+        
         if (!this.options.email) {
             return callback && callback(new Error('Email missing'));
         }
@@ -189,6 +202,9 @@ class MerossCloud extends EventEmitter {
                 let initCounter = 0;
                 let deviceListLength = 0;
                 if (deviceList && Array.isArray(deviceList)) {
+                    if(deviceId){
+                        deviceList = deviceList.filter((dev) => deviceId == dev.uuid);
+                    }
                     deviceListLength = deviceList.length;
                     deviceList.forEach((dev) => {
                         //const deviceType = dev.deviceType;
