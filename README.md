@@ -24,7 +24,10 @@ see example folder
 The library is partially based on the Python project https://github.com/albertogeniola/MerossIot, Thank you for this great basic work on how to connect to the Meross Cloud Servers
 
 ## Changelog
-### 2.4.1 (2023-01-02)
+### 2.4.2 (2023-01-31)
+* Added mulitple device connection by passing an array od uuids to connect method
+
+### 2.4.1 (2023-01-31)
 * Added one device connection by passing an uuid to connect method
 * Forked from https://github.com/Apollon77/meross-cloud
 
