@@ -8,6 +8,8 @@
 const mqtt = require('mqtt');
 const crypto = require('crypto');
 const request = require('request');
+const fs = require('fs');
+//const path = require('path');
 const EventEmitter = require('events');
 const { v4: uuidv4 } = require('uuid');
 const { getErrorMessage } = require('./lib/errorcodes');
@@ -18,6 +20,7 @@ const LOGIN_URL = `${MEROSS_URL}/v1/Auth/Login`;
 const LOGOUT_URL = `${MEROSS_URL}/v1/Profile/logout`;
 const DEV_LIST = `${MEROSS_URL}/v1/Device/devList`;
 const SUBDEV_LIST = `${MEROSS_URL}/v1/Hub/getSubDevices`;
+
 
 function generateRandomString(length) {
     const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
@@ -51,6 +54,7 @@ class MerossCloud extends EventEmitter {
         this.key = null;
         this.userId = null;
         this.userEmail = null;
+        this.cacheFile = null;
         this.authenticated = false;
 
         this.localHttpFirst = !!options.localHttpFirst;
@@ -96,7 +100,8 @@ class MerossCloud extends EventEmitter {
         this.options.logger &&  this.options.logger(`HTTP-Call: ${JSON.stringify(options)}`);
         // Perform the request.
         request(options, (error, response, body) => {
-            if (!error && response && response.statusCode === 200 && body) {
+            //console.log("request", body, error);
+            if (!error && response && response.statusCode === 200 && body) {//success
                 this.options.logger && this.options.logger(`HTTP-Response OK: ${body}`);
                 try {
                     body = JSON.parse(body);
@@ -104,13 +109,19 @@ class MerossCloud extends EventEmitter {
                 catch (err) {
                     body = {};
                 }
-
+                
+                //success
                 if (body.apiStatus === 0) {
                     return callback && callback(null, body.data);
                 }
-                return callback && callback(new Error(`${body.apiStatus} (${getErrorMessage(body.apiStatus)})${body.info ? ` - ${body.info}` : ''}`));
+                else {//error                    
+                    return callback && callback(new Error(`${body.apiStatus} (${getErrorMessage(body.apiStatus)})${body.info ? ` - ${body.info}` : ''}`));
+                }
             }
-            this.options.logger && this.options.logger(`HTTP-Response Error: ${error} / Status=${response ? response.statusCode : '--'}`);
+            else {//error
+                this.options.logger && this.options.logger(`HTTP-Response Error: ${error} / Status=${response ? response.statusCode : '--'}`);
+            } 
+            //console.log("response.statusCode", response.statusCode)
             return callback && callback(error);
         });
     }
@@ -143,6 +154,72 @@ class MerossCloud extends EventEmitter {
         this.devices[deviceId].connect();
     }
 
+    auth( callback ) {
+        this.cacheFile = "./loginResponse.json";
+        
+        if( !fs.existsSync(this.cacheFile) ){
+            if (!this.options.email) {
+                return callback && callback(new Error('Email missing'));
+            }
+            if (!this.options.password) {
+                return callback && callback(new Error('Password missing'));
+            }
+            const logIdentifier = generateRandomString(30) + uuidv4();
+            
+            const data = {
+                email: this.options.email,
+                password: this.options.password,
+                mobileInfo: {
+                    "deviceModel": "",
+                    "mobileOsVersion": "",
+                    "mobileOs": process.platform,
+                    "uuid": logIdentifier,
+                    "carrier":""
+                }
+            };
+
+            this.authenticatedPost(LOGIN_URL, data, (err, loginResponse) => {
+                //console.log("loginResponse", loginResponse);
+                if (err) {
+                    callback && callback(err);
+                    return;
+                }
+                if (!loginResponse) {
+                    callback && callback(new Error('No valid Login Response data received'));
+                    return;
+                }
+                ;
+                fs.writeFile(this.cacheFile, JSON.stringify(loginResponse), (err) => {
+                    if (err){
+                        callback && callback(new Error('loginResponse is not storable on hdd'));
+                    }
+                });
+                //TODO!!! SAVE CREDENTIALS
+                this.token = loginResponse.token;
+                this.key = loginResponse.key;
+                this.userId = loginResponse.userid;
+                this.userEmail = loginResponse.email;
+                this.authenticated = true;
+                return callback(null);
+            });
+        }
+        else {
+            fs.readFile(this.cacheFile, (err, data) => {
+                if (err) {
+                    throw err;
+                }
+                const tempData = JSON.parse(data.toString("utf-8"));
+                this.token = tempData.token;
+                this.key = tempData.key;
+                this.userId = tempData.userid;
+                this.userEmail = tempData.email;                
+                this.authenticated = true;
+                return callback(null);                
+            });
+            
+        }
+    }
+
     connect(...args) {
         let deviceId = null;
         let deviceIds = null;
@@ -162,47 +239,29 @@ class MerossCloud extends EventEmitter {
                     break;
             }
         }
-        if (!this.options.email) {
-            return callback && callback(new Error('Email missing'));
-        }
-        if (!this.options.password) {
-            return callback && callback(new Error('Password missing'));
-        }
-        const logIdentifier = generateRandomString(30) + uuidv4();
+        
+        
         //'0b11b194f83724b614a6975b112f63cee2f098-8125-40c7-a280-5115913d9887';// '%030x' % random.randrange(16 ** 30) + str(uuid.uuid4())
         // 54dp8pv70pz0a94ye8c1q5j13nhtb55dc30135-0cd6-4801-bc13-8608120b05d6
         // aa965f72dc01d414d8efa8360bade3  36894452-c55b-4f10-8ca3-c60edba97728
-        const data = {
-            email: this.options.email,
-            password: this.options.password,
-            mobileInfo: {
-                "deviceModel": "",
-                "mobileOsVersion": "",
-                "mobileOs": process.platform,
-                "uuid": logIdentifier,
-                "carrier":""
-            }
-        };
+        
         //console.log(JSON.stringify(data));
-
-        this.authenticatedPost(LOGIN_URL, data, (err, loginResponse) => {
-            //console.log(loginResponse);
-            if (err) {
-                callback && callback(err);
-                return;
+        this.auth(( err ) => {
+            if(err){
+                throw err;
             }
-            if (!loginResponse) {
-                callback && callback(new Error('No valid Login Response data received'));
-                return;
-            }
-            this.token = loginResponse.token;
-            this.key = loginResponse.key;
-            this.userId = loginResponse.userid;
-            this.userEmail = loginResponse.email;
-            this.authenticated = true;
-
             this.authenticatedPost(DEV_LIST, {}, (err, deviceList) => {
                 //console.log(JSON.stringify(deviceList, null, 2));
+                //console.log(err);
+                if(err){
+                    try {
+                        fs.unlinkSync(this.cacheFile);
+                    } 
+                    catch(e){
+                        console.log(e);
+                    }
+                    return callback(err)
+                }
 
                 let initCounter = 0;
                 let deviceListLength = 0;
@@ -232,6 +291,32 @@ class MerossCloud extends EventEmitter {
 
                 if (initCounter === deviceListLength) callback && callback(null, deviceListLength);
             });
+        })
+        /*
+        this.authenticatedPost(LOGIN_URL, data, (err, loginResponse) => {
+            console.log(loginResponse);
+            if (err) {
+                callback && callback(err);
+                return;
+            }
+            if (!loginResponse) {
+                callback && callback(new Error('No valid Login Response data received'));
+                return;
+            }
+            ;
+            fs.writeFile('./loginResponse.json', JSON.stringify(loginResponse), (err) => {
+                if (err){
+                    callback && callback(new Error('loginResponse is not storable on hdd'));
+                }
+            });
+            //TODO!!! SAVE CREDENTIALS
+            this.token = loginResponse.token;
+            this.key = loginResponse.key;
+            this.userId = loginResponse.userid;
+            this.userEmail = loginResponse.email;
+            this.authenticated = true;
+
+            
         });
 
         /*
