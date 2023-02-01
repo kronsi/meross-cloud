@@ -9,7 +9,7 @@ const mqtt = require('mqtt');
 const crypto = require('crypto');
 const request = require('request');
 const fs = require('fs');
-//const path = require('path');
+var appRoot = require('app-root-path');
 const EventEmitter = require('events');
 const { v4: uuidv4 } = require('uuid');
 const { getErrorMessage } = require('./lib/errorcodes');
@@ -20,7 +20,6 @@ const LOGIN_URL = `${MEROSS_URL}/v1/Auth/Login`;
 const LOGOUT_URL = `${MEROSS_URL}/v1/Profile/logout`;
 const DEV_LIST = `${MEROSS_URL}/v1/Device/devList`;
 const SUBDEV_LIST = `${MEROSS_URL}/v1/Hub/getSubDevices`;
-
 
 function generateRandomString(length) {
     const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
@@ -155,7 +154,7 @@ class MerossCloud extends EventEmitter {
     }
 
     auth( callback ) {
-        this.cacheFile = "./loginResponse.json";
+        this.cacheFile = appRoot.path + "/.loginResponse.json";
         
         if( !fs.existsSync(this.cacheFile) ){
             if (!this.options.email) {
