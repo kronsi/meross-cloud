@@ -268,6 +268,7 @@ class MerossCloud extends EventEmitter {
         this.options.logger && this.options.logger(`Get Devices from Meross cloud server`);
         this.authenticatedPost(DEV_LIST, {}, (err, deviceList) => {
             if (err) {
+                fs.unlinkSync(this.cacheFile);
                 callback && callback(err);
                 return;
             }
