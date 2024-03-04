@@ -7,19 +7,20 @@
 
 const mqtt = require('mqtt');
 const crypto = require('crypto');
-const request = require('request');
 const fs = require('fs');
+const request = require('request');
 var appRoot = require('app-root-path');
 const EventEmitter = require('events');
 const { v4: uuidv4 } = require('uuid');
 const { getErrorMessage } = require('./lib/errorcodes');
 
 const SECRET = '23x17ahWarFH6w29';
-const MEROSS_URL = 'https://iot.meross.com';
-const LOGIN_URL = `${MEROSS_URL}/v1/Auth/Login`;
-const LOGOUT_URL = `${MEROSS_URL}/v1/Profile/logout`;
-const DEV_LIST = `${MEROSS_URL}/v1/Device/devList`;
-const SUBDEV_LIST = `${MEROSS_URL}/v1/Hub/getSubDevices`;
+const MEROSS_DOMAIN = 'iotx.meross.com';
+const MEROSS_MQTT_DOMAIN = "eu-iotx.meross.com";
+const LOGIN_URL = `/v1/Auth/signIn`;
+const LOGOUT_URL = `/v1/Profile/logout`;
+const DEV_LIST = `/v1/Device/devList`;
+const SUBDEV_LIST = `/v1/Hub/getSubDevices`;
 
 function generateRandomString(length) {
     const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
@@ -41,6 +42,8 @@ class MerossCloud extends EventEmitter {
     /*
         email
         password
+        mfaCode (optional)
+        tokenData (object with details from former login)
         localHttpFirst
         timeout
     */
@@ -55,6 +58,8 @@ class MerossCloud extends EventEmitter {
         this.userEmail = null;
         this.cacheFile = null;
         this.authenticated = false;
+        this.httpDomain = MEROSS_DOMAIN;
+        this.mqttDomain = MEROSS_MQTT_DOMAIN;
 
         this.localHttpFirst = !!options.localHttpFirst;
         this.onlyLocalForGet = this.localHttpFirst ? !!options.onlyLocalForGet : false;
@@ -63,9 +68,38 @@ class MerossCloud extends EventEmitter {
 
         this.mqttConnections = {};
         this.devices = {};
+        this.httpRequestCounter = 0;
+
+        if (this.options.tokenData) {
+            const expectedHash = crypto.createHash('md5').update(`${this.httpDomain}${this.options.email}${this.options.password}`).digest("hex");
+            if (this.options.tokenData.hash === expectedHash) {
+                this.options.logger && this.options.logger(`Trying pre-existing token from former login`);
+                this.token = this.options.tokenData.token;
+                this.key = this.options.tokenData.key;
+                this.userId = this.options.tokenData.userId;
+                this.userEmail = this.options.tokenData.userEmail;
+                this.httpDomain = this.options.tokenData.domain;
+                this.mqttDomain = this.options.tokenData.mqttDomain;
+            } else {
+                this.options.logger && this.options.logger(`Can not reuse former token because email/password are different!`);
+            }
+        }
     }
 
-    authenticatedPost(url, paramsData, callback) {
+    getTokenData() {
+        if (!this.authenticated) return null;
+        return {
+            token: this.token,
+            key: this.key,
+            userId: this.userId,
+            userEmail: this.userEmail,
+            domain: this.httpDomain,
+            mqttDomain: this.mqttDomain,
+            hash: crypto.createHash('md5').update(`${this.httpDomain}${this.options.email}${this.options.password}`).digest("hex")
+        };
+    }
+
+    authenticatedPost(endpoint, paramsData, callback) {
         const nonce = generateRandomString(16);
         const timestampMillis = Date.now();
         const loginParams = encodeParams(paramsData);
@@ -75,11 +109,11 @@ class MerossCloud extends EventEmitter {
         const md5hash = crypto.createHash('md5').update(datatosign).digest("hex");
         const headers = {
             "Authorization": `Basic ${this.token || ''}`,
-            "vender": "meross",
-            "AppVersion": "0.4.4.4",
-            "AppType": "MerossIOT",
-            "AppLanguage": "EN",
-            "User-Agent": "MerossIOT/0.4.4.4"
+            "Vendor": "meross",
+            "AppVersion": "3.22.4",
+            "AppType": "iOS",
+            "AppLanguage": "en",
+            "User-Agent": "intellect_socket/3.22.4 (iPhone; iOS 17.2; Scale/2.00)"
         };
 
         const payload = {
@@ -90,37 +124,38 @@ class MerossCloud extends EventEmitter {
         };
 
         const options = {
-            url: url,
+            url: `https://${this.httpDomain}${endpoint}`,
             method: 'POST',
             headers: headers,
             form: payload,
             timeout: this.timeout
         };
-        this.options.logger &&  this.options.logger(`HTTP-Call: ${JSON.stringify(options)}`);
+        const requestCounter = this.httpRequestCounter++;
+        this.options.logger &&  this.options.logger(`HTTP-Call (${requestCounter}): ${JSON.stringify(options)}`);
         // Perform the request.
         request(options, (error, response, body) => {
-            //console.log("request", body, error);
-            if (!error && response && response.statusCode === 200 && body) {//success
-                this.options.logger && this.options.logger(`HTTP-Response OK: ${body}`);
+            if (!error && response && response.statusCode === 200 && body) {
+                this.options.logger && this.options.logger(`HTTP-Response (${requestCounter}) OK: ${body}`);
                 try {
                     body = JSON.parse(body);
                 }
                 catch (err) {
                     body = {};
                 }
-                
-                //success
+
                 if (body.apiStatus === 0) {
                     return callback && callback(null, body.data);
+                } else if (body.apiStatus === 1030 && body.data.domain) {
+                    this.httpDomain = body.data.domain;
+                    if (this.httpDomain.startsWith('https://')) {
+                        this.httpDomain = this.httpDomain.substring(8);
+                    }
+                    this.mqttDomain = body.data.mqttDomain;
+                    return this.authenticatedPost(endpoint, paramsData, callback);
                 }
-                else {//error                    
-                    return callback && callback(new Error(`${body.apiStatus} (${getErrorMessage(body.apiStatus)})${body.info ? ` - ${body.info}` : ''}`));
-                }
+                return callback && callback(new Error(`${body.apiStatus} (${getErrorMessage(body.apiStatus)})${body.info ? ` - ${body.info}` : ''}`));
             }
-            else {//error
-                this.options.logger && this.options.logger(`HTTP-Response Error: ${error} / Status=${response ? response.statusCode : '--'}`);
-            } 
-            //console.log("response.statusCode", response.statusCode)
+            this.options.logger && this.options.logger(`HTTP-Response (${requestCounter}) Error: ${error} / Status=${response ? response.statusCode : '--'}`);
             return callback && callback(error);
         });
     }
@@ -153,9 +188,9 @@ class MerossCloud extends EventEmitter {
         this.devices[deviceId].connect();
     }
 
-    auth( callback ) {
+    login(deviceId, deviceIds, callback) {
         this.cacheFile = appRoot.path + "/.loginResponse.json";
-        
+
         if( !fs.existsSync(this.cacheFile) ){
             if (!this.options.email) {
                 return callback && callback(new Error('Email missing'));
@@ -164,21 +199,32 @@ class MerossCloud extends EventEmitter {
                 return callback && callback(new Error('Password missing'));
             }
             const logIdentifier = generateRandomString(30) + uuidv4();
-            
+            //'0b11b194f83724b614a6975b112f63cee2f098-8125-40c7-a280-5115913d9887';// '%030x' % random.randrange(16 ** 30) + str(uuid.uuid4())
+            // 54dp8pv70pz0a94ye8c1q5j13nhtb55dc30135-0cd6-4801-bc13-8608120b05d6
+            // aa965f72dc01d414d8efa8360bade3  36894452-c55b-4f10-8ca3-c60edba97728
+            const passwordHash = crypto.createHash('md5').update(this.options.password).digest("hex");
+
             const data = {
                 email: this.options.email,
-                password: this.options.password,
+                password: passwordHash,
+                encryption: 1,
+                accountCountryCode: '--',
                 mobileInfo: {
-                    "deviceModel": "",
-                    "mobileOsVersion": "",
-                    "mobileOs": process.platform,
-                    "uuid": logIdentifier,
-                    "carrier":""
-                }
+                    resolution: '--',
+                    carrier: '--',
+                    deviceModel: '--',
+                    mobileOs: process.platform,
+                    mobileOSVersion: '--',
+                    uuid: logIdentifier,
+                },
+                agree: 1,
+                mfaCode: this.options.mfaCode || undefined,
             };
+            //console.log(JSON.stringify(data));
 
+            this.options.logger && this.options.logger(`Login to Meross${this.options.mfaCode ? ' with MFA code': ''}`);
             this.authenticatedPost(LOGIN_URL, data, (err, loginResponse) => {
-                //console.log("loginResponse", loginResponse);
+                //console.log(loginResponse);
                 if (err) {
                     callback && callback(err);
                     return;
@@ -187,19 +233,18 @@ class MerossCloud extends EventEmitter {
                     callback && callback(new Error('No valid Login Response data received'));
                     return;
                 }
-                ;
                 fs.writeFile(this.cacheFile, JSON.stringify(loginResponse), (err) => {
                     if (err){
                         callback && callback(new Error('loginResponse is not storable on hdd'));
                     }
                 });
-                //TODO!!! SAVE CREDENTIALS
                 this.token = loginResponse.token;
                 this.key = loginResponse.key;
                 this.userId = loginResponse.userid;
                 this.userEmail = loginResponse.email;
                 this.authenticated = true;
-                return callback(null);
+
+                this.getDevices(deviceId, deviceIds, callback);
             });
         }
         else {
@@ -213,10 +258,49 @@ class MerossCloud extends EventEmitter {
                 this.userId = tempData.userid;
                 this.userEmail = tempData.email;                
                 this.authenticated = true;
-                return callback(null);                
+                this.getDevices(deviceId, deviceIds, callback);
             });
-            
         }
+    }
+
+    getDevices(deviceId, deviceIds, callback) {
+        
+        this.options.logger && this.options.logger(`Get Devices from Meross cloud server`);
+        this.authenticatedPost(DEV_LIST, {}, (err, deviceList) => {
+            if (err) {
+                callback && callback(err);
+                return;
+            }
+            //console.log(JSON.stringify(deviceList, null, 2));
+
+            let initCounter = 0;
+            let deviceListLength = 0;
+            if (deviceList && Array.isArray(deviceList)) {
+                if(deviceId){
+                    deviceList = deviceList.filter((dev) => deviceId == dev.uuid);
+                }
+                if(deviceIds && deviceIds.length > 0){
+                    deviceList = deviceList.filter((dev) => deviceIds.includes(dev.uuid));
+                }
+                deviceListLength = deviceList.length;
+                deviceList.forEach((dev) => {
+                    //const deviceType = dev.deviceType;
+                    if (dev.deviceType.startsWith('msh300')) {
+                        this.options.logger && this.options.logger(`${dev.uuid} Detected Hub`);
+                        this.authenticatedPost(SUBDEV_LIST, {uuid: dev.uuid}, (err, subDeviceList) => {
+                            this.connectDevice(new MerossCloudHubDevice(this, dev, subDeviceList), dev);
+                            initCounter++;
+                            if (initCounter === deviceListLength) callback && callback(null, deviceListLength);
+                        });
+                    } else {
+                        this.connectDevice(new MerossCloudDevice(this, dev), dev);
+                        initCounter++;
+                    }
+                });
+            }
+
+            if (initCounter === deviceListLength) callback && callback(null, deviceListLength);
+        });
     }
 
     connect(...args) {
@@ -239,84 +323,22 @@ class MerossCloud extends EventEmitter {
             }
         }
         
-        
-        //'0b11b194f83724b614a6975b112f63cee2f098-8125-40c7-a280-5115913d9887';// '%030x' % random.randrange(16 ** 30) + str(uuid.uuid4())
-        // 54dp8pv70pz0a94ye8c1q5j13nhtb55dc30135-0cd6-4801-bc13-8608120b05d6
-        // aa965f72dc01d414d8efa8360bade3  36894452-c55b-4f10-8ca3-c60edba97728
-        
-        //console.log(JSON.stringify(data));
-        this.auth(( err ) => {
-            if(err){
-                throw err;
-            }
-            this.authenticatedPost(DEV_LIST, {}, (err, deviceList) => {
-                //console.log(JSON.stringify(deviceList, null, 2));
-                //console.log(err);
-                if(err){
-                    try {
-                        fs.unlinkSync(this.cacheFile);
-                    } 
-                    catch(e){
-                        console.log(e);
-                    }
-                    return callback(err)
+        if (this.authenticated || this.token) {
+            this.getDevices(deviceId, deviceIds, callback, (err, deviceListLength) => {
+                console.log("deviceListLength", deviceListLength);
+                
+                if (err && err.message.includes('Token')) {
+                    this.options.logger && this.options.logger(`Pre-existing token seems invalid ... Doing login`);
+                    this.login(deviceId, deviceIds, callback);
                 }
-
-                let initCounter = 0;
-                let deviceListLength = 0;
-                if (deviceList && Array.isArray(deviceList)) {
-                    if(deviceId){
-                        deviceList = deviceList.filter((dev) => deviceId == dev.uuid);
-                    }
-                    if(deviceIds && deviceIds.length > 0){
-                        deviceList = deviceList.filter((dev) => deviceIds.includes(dev.uuid));
-                    }
-                    deviceListLength = deviceList.length;
-                    deviceList.forEach((dev) => {
-                        //const deviceType = dev.deviceType;
-                        if (dev.deviceType.startsWith('msh300')) {
-                            this.options.logger && this.options.logger(`${dev.uuid} Detected Hub`);
-                            this.authenticatedPost(SUBDEV_LIST, {uuid: dev.uuid}, (err, subDeviceList) => {
-                                this.connectDevice(new MerossCloudHubDevice(this, dev, subDeviceList), dev);
-                                initCounter++;
-                                if (initCounter === deviceListLength) callback && callback(null, deviceListLength);
-                            });
-                        } else {
-                            this.connectDevice(new MerossCloudDevice(this, dev), dev);
-                            initCounter++;
-                        }
-                    });
-                }
-
-                if (initCounter === deviceListLength) callback && callback(null, deviceListLength);
-            });
-        })
-        /*
-        this.authenticatedPost(LOGIN_URL, data, (err, loginResponse) => {
-            console.log(loginResponse);
-            if (err) {
-                callback && callback(err);
-                return;
-            }
-            if (!loginResponse) {
-                callback && callback(new Error('No valid Login Response data received'));
-                return;
-            }
-            ;
-            fs.writeFile('./loginResponse.json', JSON.stringify(loginResponse), (err) => {
-                if (err){
-                    callback && callback(new Error('loginResponse is not storable on hdd'));
+                else {
+                    this.authenticated = true;
+                    callback && callback(err, deviceListLength);
                 }
             });
-            //TODO!!! SAVE CREDENTIALS
-            this.token = loginResponse.token;
-            this.key = loginResponse.key;
-            this.userId = loginResponse.userid;
-            this.userEmail = loginResponse.email;
-            this.authenticated = true;
-
-            
-        });
+        } else {
+            this.login(deviceId, deviceIds, callback);
+        }
 
         /*
         /app/64416/subscribe <-- {"header":{"messageId":"b5da1e168cba7a681afcff82eaf703c8","namespace":"Appliance.System.Online","timestamp":1539614195,"method":"PUSH","sign":"b16c2c4cbb5acf13e6b94990abf5b140","from":"/appliance/1806299596727829081434298f15a991/subscribe","payloadVersion":1},"payload":{"online":{"status":2}}}
@@ -366,13 +388,13 @@ class MerossCloud extends EventEmitter {
     }
 
     initMqtt(dev) {
-        const domain = dev.domain || "eu-iot.meross.com"; // reservedDomain ???
+        const domain = dev.domain || this.mqttDomain; // reservedDomain ???
         if (!this.mqttConnections[domain] || !this.mqttConnections[domain].client) {
             const appId = crypto.createHash('md5').update(`API${uuidv4()}`).digest("hex");
             const clientId = `app:${appId}`;
 
             // Password is calculated as the MD5 of USERID concatenated with KEY
-            const hashedPassword = crypto.createHash('md5').update(this.userId + this.key).digest("hex");
+            const hashedPassword = crypto.createHash('md5').update(`${this.userId}${this.key}`).digest("hex");
 
             if (!this.mqttConnections[domain]) {
                 this.mqttConnections[domain] = {};
@@ -476,7 +498,7 @@ class MerossCloud extends EventEmitter {
             }
             if (this.mqttConnections[domain].client.connected) {
                 setImmediate(() => {
-                    this.devices[dev] && this.devices[dev].emit('connected');
+                    this.devices[dev.uuid] && this.devices[dev.uuid].emit('connected');
                 });
             }
         }

@@ -1,6 +1,6 @@
 {
   "name": "@kronsi/meross-cloud",
-  "version": "2.4.4",
+  "version": "2.4.5",
   "description": "Control Meross cloud devices using nodejs",
   "author": "Ingo Fischer <iobroker@fischer-ka.de>",
   "co-author": "Sven Kronshage <sven@kronsi.com>",
