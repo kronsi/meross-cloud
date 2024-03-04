@@ -13,4 +13,5 @@ coverage
 .eslintignore
 package-lock.json
 .github
+.loginResponse.json
 example/example-internal.js

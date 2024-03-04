@@ -66,3 +66,4 @@ typings/
 
 example/example-internal.js
 package-lock.json
+.loginResponse.json
